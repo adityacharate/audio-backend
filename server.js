@@ -1,88 +1,79 @@
-require("dotenv").config();
 const express = require("express");
-const multer = require("multer");
-const ffmpeg = require("fluent-ffmpeg");
-const fs = require("fs");
-const path = require("path");
 const cors = require("cors");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const ffmpeg = require("fluent-ffmpeg");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Create "uploads" and "compressed" folders if they don't exist
-const UPLOADS_DIR = path.join(__dirname, "uploads");
-const COMPRESSED_DIR = path.join(__dirname, "compressed");
+// Create an "uploads" folder if it doesn't exist
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
 
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
-if (!fs.existsSync(COMPRESSED_DIR)) fs.mkdirSync(COMPRESSED_DIR);
-
-// Configure Multer for file uploads
+// Multer storage configuration
 const storage = multer.diskStorage({
-  destination: UPLOADS_DIR,
+  destination: (req, file, cb) => {
+    cb(null, "uploads/"); // Save files in uploads directory
+  },
   filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
+    cb(null, Date.now() + path.extname(file.originalname)); // Rename file with timestamp
   },
 });
+
 const upload = multer({ storage });
 
-// Upload and compress audio
-app.post("/upload", upload.single("audio"), async (req, res) => {
-  if (!req.file) return res.status(400).send("No file uploaded.");
+// 🎵 **Route to Upload Audio File**
+app.post("/upload", upload.single("audio"), (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded!" });
+  }
 
   const inputPath = req.file.path;
-  const outputPath = path.join(COMPRESSED_DIR, req.file.filename + ".mp3");
+  const outputPath = `uploads/compressed_${req.file.filename}.mp3`;
 
   // Compress audio using FFmpeg
   ffmpeg(inputPath)
     .audioCodec("libmp3lame")
-    .audioBitrate("128k") // Adjust bitrate for compression
+    .audioBitrate("128k") // Compress to 128kbps
+    .save(outputPath)
     .on("end", () => {
-      fs.unlinkSync(inputPath); // Remove original file after compression
-      res.json({ message: "File uploaded & compressed!", file: req.file.filename + ".mp3" });
+      fs.unlinkSync(inputPath); // Delete original file
+      res.json({ message: "File uploaded and compressed!", file: outputPath });
     })
-    .on("error", (err) => res.status(500).json({ error: err.message }))
-    .save(outputPath);
-});
-
-// Stream audio in chunks
-app.get("/stream/:filename", (req, res) => {
-  const filePath = path.join(COMPRESSED_DIR, req.params.filename);
-  if (!fs.existsSync(filePath)) return res.status(404).send("File not found");
-
-  const stat = fs.statSync(filePath);
-  const fileSize = stat.size;
-  const range = req.headers.range;
-
-  if (range) {
-    const parts = range.replace(/bytes=/, "").split("-");
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    const chunkSize = end - start + 1;
-
-    const fileStream = fs.createReadStream(filePath, { start, end });
-    res.writeHead(206, {
-      "Content-Range": `bytes ${start}-${end}/${fileSize}`,
-      "Accept-Ranges": "bytes",
-      "Content-Length": chunkSize,
-      "Content-Type": "audio/mp3",
+    .on("error", (err) => {
+      console.error("FFmpeg error:", err);
+      res.status(500).json({ error: "Compression failed!" });
     });
-    fileStream.pipe(res);
-  } else {
-    res.writeHead(200, { "Content-Type": "audio/mp3", "Content-Length": fileSize });
-    fs.createReadStream(filePath).pipe(res);
-  }
 });
 
-// List all compressed audio files
-app.get("/files", (req, res) => {
-  fs.readdir(COMPRESSED_DIR, (err, files) => {
-    if (err) return res.status(500).send("Error reading files");
-    res.json(files);
+// 🎵 **Route to Get All Songs**
+app.get("/songs", (req, res) => {
+  fs.readdir(uploadDir, (err, files) => {
+    if (err) {
+      return res.status(500).json({ error: "Could not fetch songs" });
+    }
+    const audioFiles = files.filter((file) => file.endsWith(".mp3"));
+    res.json(audioFiles);
   });
 });
 
-// Start the server
+// 🎵 **Route to Serve Audio Files**
+app.get("/songs/:filename", (req, res) => {
+  const filePath = path.join(__dirname, "uploads", req.params.filename);
+  if (fs.existsSync(filePath)) {
+    res.sendFile(filePath);
+  } else {
+    res.status(404).json({ error: "File not found!" });
+  }
+});
+
+// Start server
 app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
